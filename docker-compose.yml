@@ -1,0 +1,9 @@
+services:
+  doh-proxy:
+    image: ghcr.io/tarocats/doh-proxy-go:latest
+    build: .
+    ports:
+      - "8053:8053"
+    environment:
+      UPSTREAM_DNS: "124.221.68.73:1053"
+    restart: unless-stopped
