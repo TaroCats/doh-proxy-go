@@ -13,8 +13,20 @@ permissions:
   packages: write
 
 jobs:
-  build-and-push:
+  build:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            id: linux-amd64
+          - platform: linux/arm64
+            id: linux-arm64
+          - platform: linux/386
+            id: linux-386
+          - platform: linux/arm/v7
+            id: linux-armv7
     steps:
       - uses: actions/checkout@v4
 
@@ -33,11 +45,59 @@ jobs:
         with:
           images: ghcr.io/${{ github.repository }}
 
-      - uses: docker/build-push-action@v6
+      - id: build
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64,linux/386,linux/arm/v7
+          platforms: ${{ matrix.platform }}
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=ghcr.io/${{ github.repository }},push-by-digest=true,name-canonical=true,push=true
+
+      - run: echo "${{ steps.build.outputs.digest }}" > digest.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.id }}
+          path: digest.txt
+
+  manifest:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+
+      - run: |
+          set -eux
+          IMAGE="ghcr.io/${{ github.repository }}"
+
+          TAG_ARGS=""
+          while IFS= read -r tag; do
+            [ -n "$tag" ] && TAG_ARGS="$TAG_ARGS -t $tag"
+          done <<< "${{ steps.meta.outputs.tags }}"
+
+          REF_ARGS=""
+          for f in digests/*.txt; do
+            d="$(cat "$f")"
+            REF_ARGS="$REF_ARGS ${IMAGE}@${d}"
+          done
+
+          docker buildx imagetools create $TAG_ARGS $REF_ARGS
